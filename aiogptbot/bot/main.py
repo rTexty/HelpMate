@@ -12,6 +12,8 @@ from .db.redis_client import redis_client
 from .logging_config import logger
 from .handlers import user, payments
 from .services.mailing_service import send_mailing
+from .middlewares import setup_middlewares
+from aiogptbot.bot.services.payment_service import poll_cryptocloud_payments
 
 # Проверка переменных окружения
 REQUIRED_ENV = [settings.BOT_TOKEN, settings.OPENAI_API_KEY, settings.POSTGRES_DSN, settings.REDIS_DSN]
@@ -23,7 +25,9 @@ async def set_commands(bot: Bot):
     commands = [
         BotCommand(command="start", description="Начать диалог"),
         BotCommand(command="help", description="Помощь"),
-        BotCommand(command="profile", description="Профиль и подписка")
+        BotCommand(command="profile", description="Профиль и подписка"),
+        BotCommand(command="buy_premium", description="Купить подписку (Telegram)"),
+        BotCommand(command="buy_premium_crypto", description="Купить подписку (CryptoCloud)"),
     ]
     await bot.set_my_commands(commands)
 
@@ -45,12 +49,11 @@ async def on_shutdown(bot: Bot):
     logger.info("Бот остановлен и соединения закрыты")
 
 def register_middlewares(dp: Dispatcher):
-    # Здесь будут middlewares: логирование, антифлуд, подписка, фильтрация и т.д.
-    pass
+    setup_middlewares(dp)
 
 def register_handlers(dp: Dispatcher):
-    dp.include_router(user.router)
     dp.include_router(payments.router)
+    dp.include_router(user.router)
 
 async def process_pending_mailings(bot):
     while True:
@@ -88,10 +91,10 @@ async def main():
     register_middlewares(dp)
     register_handlers(dp)
 
-
     try:
         await on_startup(bot)  # Сначала подключаем БД и Redis
         asyncio.create_task(process_pending_mailings(bot))
+        asyncio.create_task(poll_cryptocloud_payments())
         await dp.start_polling(bot)
     except (KeyboardInterrupt, SystemExit):
         logger.info("Остановка бота...")

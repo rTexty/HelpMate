@@ -30,7 +30,9 @@ async def set_commands(bot: Bot):
         BotCommand(command="test_prompt", description="Тестовый запрос к GPT"),
         BotCommand(command="restart_bot", description="Перезапуск бота"),
         BotCommand(command="mailing", description="Рассылка"),
-        BotCommand(command="stats", description="Статистика")
+        BotCommand(command="stats", description="Статистика"),
+        BotCommand(command="set_price", description="Установить стоимость подписки"),
+        BotCommand(command="get_price", description="Получить стоимость подписки"),
     ]
     await bot.set_my_commands(commands)
 

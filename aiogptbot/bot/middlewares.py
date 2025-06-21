@@ -1,16 +1,17 @@
 from aiogram import BaseMiddleware
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from loguru import logger
 from .services.subscription_service import check_user_subscription, increment_message_count
-from .services.emotion_service import filter_bad_words, detect_emotion, empathy_response
+from .services.emotion_service import filter_bad_words, detect_emotion
 from .db.postgres import db
 import time
+from .config import settings
 
 class LoggingMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
-        if isinstance(event, Message) and event.from_user is not None:
-            user = event.from_user
-            logger.info(f"User {user.id} (@{user.username}): {event.text}")
+        # if isinstance(event, Message) and event.from_user is not None:
+        #     user = event.from_user
+        #     logger.info(f"User {user.id} (@{user.username}): {event.text}")
         return await handler(event, data)
 
 class SubscriptionMiddleware(BaseMiddleware):
@@ -25,14 +26,48 @@ class SubscriptionMiddleware(BaseMiddleware):
             user = await db.fetchrow("SELECT * FROM users WHERE telegram_id=$1", user_id)
         # Проверка бана
         if user['is_banned']:
-            await event.answer("Вы заблокированы.")
+            await event.answer(f"Вы заблокированы. Свяжитесь с {settings.ADMIN_USERNAME} для разблокировки.")
             return None
-        # Проверка лимита
-        if user['status'] == 'demo' and user['daily_message_count'] >= 5:
-            await event.answer("Доступно только 5 сообщений в день. Оформите подписку для неограниченного доступа.")
+        # Проверка лимита только для обычных сообщений, не команд
+        if (
+            user['status'] == 'demo'
+            and user['daily_message_count'] >= 5
+            and not (event.text and event.text.startswith('/'))
+        ):
+            markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="Оплатить через Telegram", callback_data="pay_telegram"),
+                        InlineKeyboardButton(text="Оплатить криптой", callback_data="pay_crypto")
+                    ]
+                ]
+            )
+            await event.answer(
+                "Доступно только 5 сообщений в день. Оформите подписку для неограниченного доступа.",
+                reply_markup=markup
+            )
             return None
         # Проверка подписки
         await check_user_subscription(user_id)
+        # Повторно получаем пользователя, чтобы узнать обновлённый статус
+        user = await db.fetchrow("SELECT * FROM users WHERE telegram_id=$1", user_id)
+        if user['status'] == 'expired':
+            # Если лимит не превышен, разрешаем отправку
+            if user['daily_message_count'] < 5 or (event.text and event.text.startswith('/')):
+                await increment_message_count(user_id)
+                return await handler(event, data)
+            # Если лимит превышен, показываем окно оплаты
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Оплатить через Telegram", callback_data="pay_telegram"),
+                    InlineKeyboardButton(text="Оплатить криптой", callback_data="pay_crypto")
+                ]
+            ])
+            await event.answer(
+                "Ваша подписка на бота закончилась. Далее вам доступно 5 сообщений в день.\n\nЛимит сообщений на сегодня исчерпан. Для продления подписки выберите способ оплаты:",
+                reply_markup=markup
+            )
+            return None
         await increment_message_count(user_id)
         return await handler(event, data)
 
@@ -45,10 +80,6 @@ class FilterMiddleware(BaseMiddleware):
         if replaced:
             await event.answer("Давайте общаться вежливо.")
             event.text = filtered_text
-        # Эмоции и эмпатия
-        emotion = detect_emotion(event.text)
-        if emotion == 'sad':
-            await event.answer(empathy_response())
         return await handler(event, data)
 
 class AntiFloodMiddleware(BaseMiddleware):

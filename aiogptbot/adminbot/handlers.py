@@ -24,6 +24,9 @@ class PromptStates(StatesGroup):
     waiting_for_mailing = State()
     waiting_for_test_prompt = State()
 
+class PriceStates(StatesGroup):
+    waiting_for_price = State()
+
 router = Router()
 
 # --- Промпты ---
@@ -147,7 +150,7 @@ async def stats(message: Message):
         f"{hbold('Статистика')}\n"
         f"Всего пользователей: {total}\n"
         f"Подписчиков: {premium}\n"
-        f"Средняя длина диалога: {avg_dialog:.1f if avg_dialog else 0}\n"
+        f"Средняя длина диалога: {round(avg_dialog, 1) if avg_dialog is not None else 0}\n"
         f"Активные за 7 дней: {active_7d}\n"
         f"Оплаты сегодня: {payments_today}"
     )
@@ -195,27 +198,29 @@ async def find_user(message: Message, command: CommandObject):
 async def ban_user(message: Message, command: CommandObject):
     arg = command.args
     if not arg:
-        await message.answer("Укажите ID: /ban_user 123456")
+        await message.answer("Укажите username: /ban_user @username")
         return
-    try:
-        uid = int(arg)
-        await db.execute("UPDATE users SET is_banned=TRUE WHERE telegram_id=$1", uid)
-        await message.answer(f"Пользователь {uid} заблокирован.")
-    except Exception:
-        await message.answer("Ошибка. Проверьте ID.")
+    username = arg.lstrip('@')
+    user = await db.fetchrow("SELECT * FROM users WHERE username=$1", username)
+    if not user:
+        await message.answer("Пользователь с таким username не найден.")
+        return
+    await db.execute("UPDATE users SET is_banned=TRUE WHERE username=$1", username)
+    await message.answer(f"Пользователь @{username} заблокирован.")
 
 @router.message(AdminFilter(), Command("unban_user"))
 async def unban_user(message: Message, command: CommandObject):
     arg = command.args
     if not arg:
-        await message.answer("Укажите ID: /unban_user 123456")
+        await message.answer("Укажите username: /unban_user @username")
         return
-    try:
-        uid = int(arg)
-        await db.execute("UPDATE users SET is_banned=FALSE WHERE telegram_id=$1", uid)
-        await message.answer(f"Пользователь {uid} разблокирован.")
-    except Exception:
-        await message.answer("Ошибка. Проверьте ID.")
+    username = arg.lstrip('@')
+    user = await db.fetchrow("SELECT * FROM users WHERE username=$1", username)
+    if not user:
+        await message.answer("Пользователь с таким username не найден.")
+        return
+    await db.execute("UPDATE users SET is_banned=FALSE WHERE username=$1", username)
+    await message.answer(f"Пользователь @{username} разблокирован.")
 
 # --- Тестовый промпт ---
 @router.message(AdminFilter(), Command("test_prompt"))
@@ -240,3 +245,32 @@ async def restart_bot(message: Message):
     await message.answer("Основной бот будет перезапущен.")
     import os
     os.system("./restart_userbot.sh")
+
+@router.message(AdminFilter(), Command("get_price"))
+async def get_price(message: Message):
+    row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month'")
+    if row:
+        await message.answer(f"Текущая стоимость подписки: {row['value']} руб.")
+    else:
+        await message.answer("Стоимость подписки не установлена.")
+
+@router.message(AdminFilter(), Command("set_price"))
+async def set_price(message: Message, state: FSMContext):
+    await message.answer("Введите новую стоимость подписки в рублях (целое число):")
+    await state.set_state(PriceStates.waiting_for_price)
+
+@router.message(AdminFilter(), PriceStates.waiting_for_price)
+async def save_price(message: Message, state: FSMContext):
+    try:
+        price = int(message.text)
+        if price <= 0:
+            raise ValueError
+    except Exception:
+        await message.answer("Введите корректное положительное число!")
+        return
+    await db.execute(
+        "INSERT INTO prices (name, value, updated_at) VALUES ('premium_month', $1, NOW()) ON CONFLICT (name) DO UPDATE SET value=$1, updated_at=NOW()",
+        price
+    )
+    await message.answer(f"Стоимость подписки обновлена: {price} руб.")
+    await state.clear()

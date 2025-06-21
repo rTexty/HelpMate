@@ -1,6 +1,6 @@
 from aiogram import Router, F, types, Bot
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.markdown import hbold
 from aiogram.utils.chat_action import ChatActionSender
 from datetime import datetime, timedelta
@@ -12,6 +12,9 @@ from ..services.memory_service import get_user_memory, update_user_memory
 from ..services.subscription_service import get_user_status, get_daily_limit, get_subscription_info
 from loguru import logger
 import asyncio
+from aiogptbot.bot.config import settings
+import httpx
+from aiogptbot.bot.services.payment_service import create_telegram_invoice, create_cryptocloud_invoice
 
 router = Router()
 
@@ -76,7 +79,14 @@ async def dialog_handler(message: Message, bot: Bot):
     except Exception as e:
         logger.error(f"Ошибка при вставке сообщения пользователя: {e}")
     if user['status'] == 'demo' and user['daily_message_count'] >= 5:
-        await message.answer("Доступно только 5 сообщений в день. Оформите подписку для неограниченного доступа.")
+        await message.answer("Доступно только 5 сообщений в день. Оформите подписку для неограниченного доступа.", reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Оплатить через Telegram", callback_data="pay_telegram"),
+                    InlineKeyboardButton(text="Оплатить криптой", callback_data="pay_crypto")
+                ]
+            ]
+        ))
         return
     memory = await get_user_memory(user_id)
     prompt = await db.fetchrow("SELECT text FROM prompts WHERE is_active=TRUE ORDER BY id DESC LIMIT 1")
@@ -103,3 +113,37 @@ async def dialog_handler(message: Message, bot: Bot):
         datetime.now(), user_id
     )
     logger.info(f"User {user_id} получил ответ от GPT")
+
+@router.callback_query(F.data == "pay_telegram")
+async def pay_telegram_callback(callback: types.CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+    invoice_data, error = await create_telegram_invoice(user_id)
+    if error or not invoice_data:
+        await bot.send_message(user_id, error or "Ошибка при создании инвойса. Попробуйте позже.")
+        await callback.answer()
+        return
+    await bot.send_invoice(
+        invoice_data["user_id"],
+        invoice_data["title"],
+        invoice_data["description"],
+        invoice_data["payload"],
+        invoice_data["provider_token"],
+        invoice_data["currency"],
+        invoice_data["prices"],
+        start_parameter=invoice_data["start_parameter"]
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "pay_crypto")
+async def pay_crypto_callback(callback: types.CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+    result, error = await create_cryptocloud_invoice(user_id)
+    if error:
+        await bot.send_message(user_id, error)
+        await callback.answer()
+        return
+    if result and "url" in result:
+        await bot.send_message(user_id, f"Оплатите по ссылке (криптовалюта):\n{result['url']}\n\nПосле оплаты подписка будет активирована в течение нескольких минут.")
+    else:
+        await bot.send_message(user_id, "Ошибка при создании ссылки на оплату. Попробуйте позже.")
+    await callback.answer()
