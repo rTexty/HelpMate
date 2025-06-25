@@ -1,36 +1,79 @@
-from aiogram import Router, F
-from aiogram.types import Message, PreCheckoutQuery
+from aiogram import Router, F, Bot
+from aiogram.types import Message, PreCheckoutQuery, CallbackQuery
 from aiogram.filters import Command
 from ..db.postgres import db
 from ..config import settings
 from loguru import logger
 from datetime import datetime, timedelta
-from aiogptbot.bot.services.payment_service import create_telegram_invoice, create_cryptocloud_invoice, record_successful_payment
+from aiogptbot.bot.services.payment_service import create_telegram_invoice, create_cryptocloud_invoice, record_successful_telegram_payment
 
 router = Router()
 
-# --- Telegram Stars ---
+# --- Внутренние функции для отправки инвойсов ---
 
-@router.message(Command("buy_premium"))
-async def buy_premium(message: Message, bot):
-    user_id = message.from_user.id if message.from_user else None
-    if not user_id:
-        await message.answer("Ошибка: не удалось определить пользователя.")
-        return
+async def _send_telegram_invoice(user_id: int, bot: Bot, message: Message | CallbackQuery):
+    """Создает и отправляет инвойс Telegram Stars."""
     invoice_data, error = await create_telegram_invoice(user_id)
     if error or not invoice_data:
-        await message.answer(error or "Ошибка при создании инвойса. Попробуйте позже.")
+        answer_text = error or "Ошибка при создании инвойса. Попробуйте позже."
+        if isinstance(message, Message):
+            await message.answer(answer_text)
+        else:
+            await bot.send_message(user_id, answer_text)
         return
+
     await bot.send_invoice(
-        invoice_data["user_id"],
-        invoice_data["title"],
-        invoice_data["description"],
-        invoice_data["payload"],
-        "",  # provider_token пустой для Stars
-        "XTR",  # Валюта Stars
-        invoice_data["prices"],
+        chat_id=user_id,
+        title=invoice_data["title"],
+        description=invoice_data["description"],
+        payload=invoice_data["payload"],
+        provider_token="",  # Пустой для Stars
+        currency="XTR",
+        prices=invoice_data["prices"],
         start_parameter=invoice_data["start_parameter"]
     )
+
+async def _send_cryptocloud_invoice(user_id: int, bot: Bot, message: Message | CallbackQuery):
+    """Создает и отправляет инвойс CryptoCloud."""
+    result, error = await create_cryptocloud_invoice(user_id)
+    if error:
+        answer_text = error
+    elif result and "url" in result:
+        answer_text = f"Оплатите по ссылке (криптовалюта):\n{result['url']}\n\nПосле оплаты подписка будет активирована в течение нескольких минут."
+    else:
+        answer_text = "Ошибка при создании ссылки на оплату. Попробуйте позже."
+
+    if isinstance(message, Message):
+        await message.answer(answer_text)
+    else:
+        await bot.send_message(user_id, answer_text)
+
+
+# --- Обработчики команд ---
+
+@router.message(Command("buy_premium"))
+async def buy_premium_cmd(message: Message, bot: Bot):
+    if not message.from_user: return
+    await _send_telegram_invoice(message.from_user.id, bot, message)
+
+@router.message(Command("buy_premium_crypto"))
+async def buy_premium_crypto_cmd(message: Message, bot: Bot):
+    if not message.from_user: return
+    await _send_cryptocloud_invoice(message.from_user.id, bot, message)
+
+# --- Обработчики колбэков (когда пользователь нажимает кнопку в сообщении о лимите) ---
+
+@router.callback_query(F.data == "pay_telegram")
+async def pay_telegram_callback(call: CallbackQuery, bot: Bot):
+    await _send_telegram_invoice(call.from_user.id, bot, call)
+    await call.answer()
+
+@router.callback_query(F.data == "pay_crypto")
+async def pay_crypto_callback(call: CallbackQuery, bot: Bot):
+    await _send_cryptocloud_invoice(call.from_user.id, bot, call)
+    await call.answer()
+
+# --- Обработка успешных платежей ---
 
 @router.pre_checkout_query()
 async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
@@ -86,7 +129,7 @@ async def successful_payment_handler(message: Message):
 
     logger.info(f"[SuccessfulPayment] User {user_id} update status: {update_result}. Now recording payment.")
 
-    await record_successful_payment(
+    await record_successful_telegram_payment(
         user_id=real_user_id,
         amount=payment_info.total_amount,
         telegram_payment_charge_id=payment_info.telegram_payment_charge_id
@@ -99,19 +142,3 @@ async def successful_payment_handler(message: Message):
 
     await message.answer("Спасибо за оплату! Ваша подписка активирована на 1 месяц.")
     logger.info(f"[SuccessfulPayment] Successfully activated subscription for user {user_id} until {until}.")
-
-# --- CryptoCloud ---
-@router.message(Command("buy_premium_crypto"))
-async def buy_premium_crypto(message: Message):
-    user_id = message.from_user.id if message.from_user else None
-    if not user_id:
-        await message.answer("Ошибка: не удалось определить пользователя.")
-        return
-    result, error = await create_cryptocloud_invoice(user_id)
-    if error:
-        await message.answer(error)
-        return
-    if result and "url" in result:
-        await message.answer(f"Оплатите по ссылке (криптовалюта):\n{result['url']}\n\nПосле оплаты подписка будет активирована в течение нескольких минут.")
-    else:
-        await message.answer("Ошибка при создании ссылки на оплату. Попробуйте позже.")

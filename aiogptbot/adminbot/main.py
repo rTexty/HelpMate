@@ -32,7 +32,7 @@ async def set_commands(bot: Bot):
         BotCommand(command="mailing", description="Рассылка"),
         BotCommand(command="stats", description="Статистика"),
         BotCommand(command="set_price", description="Установить стоимость подписки"),
-        BotCommand(command="get_price", description="Получить стоимость подписки"),
+        BotCommand(command="get_prices", description="Получить стоимости подписки"),
     ]
     await bot.set_my_commands(commands)
 

@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from loguru import logger
 from datetime import datetime, timedelta
 from ..config import settings
+import asyncio
 
 ADMIN_IDS = [int(x) for x in settings.ADMIN_IDS.split(',') if x]
 
@@ -45,3 +46,35 @@ async def send_mailing(
     )
     logger.info(f"Рассылка завершена: отправлено {sent}, ошибок {failed}")
     return sent, failed
+
+async def poll_pending_mailings(bot: Bot):
+    """
+    Запускать как отдельную задачу. Опрашивает БД на наличие неотправленных
+    рассылок и отправляет их согласно сегменту.
+    """
+    await asyncio.sleep(10) # Начальная задержка перед первым запуском
+    while True:
+        mailings = await db.fetch("SELECT * FROM mailings WHERE sent=FALSE ORDER BY created_at ASC")
+        for mailing in mailings:
+            logger.info(f"Начинается рассылка {mailing['id']} для сегмента {mailing['segment']}")
+            
+            user_ids = await get_user_ids(mailing['segment'])
+            
+            markup = None
+            if mailing['button_text'] and mailing['button_url']:
+                markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=mailing['button_text'], url=mailing['button_url'])]])
+            
+            sent, failed = 0, 0
+            for uid in user_ids:
+                try:
+                    await bot.send_message(uid, mailing['text'], reply_markup=markup)
+                    sent += 1
+                    await asyncio.sleep(0.1) # небольшая задержка между отправками
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить сообщение {uid} в рамках рассылки {mailing['id']}: {e}")
+                    failed += 1
+            
+            await db.execute("UPDATE mailings SET sent=TRUE WHERE id=$1", mailing['id'])
+            logger.info(f"Рассылка {mailing['id']} завершена: отправлено {sent}, ошибок {failed}")
+        
+        await asyncio.sleep(60) # Пауза между проверками

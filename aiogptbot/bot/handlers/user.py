@@ -58,19 +58,17 @@ async def cmd_profile(message: Message):
         f"Сообщений сегодня: {daily_count}/5 (для demo)"
     )
 
-@router.message()
+@router.message(F.text)
 async def dialog_handler(message: Message, bot: Bot):
-    if not message.from_user:
+    if not message.from_user or not message.text:
         return
-    # Проверка на мат
-    if await bad_word_filter(message):
-        await message.answer("Давайте общаться вежливо 😊")
-        return
+
     user_id = message.from_user.id
     user = await db.fetchrow("SELECT * FROM users WHERE telegram_id=$1", user_id)
     if not user:
         await message.answer("Профиль не найден. Напишите /start.")
         return
+
     try:
         await db.execute(
             "INSERT INTO messages (user_id, role, content, created_at) VALUES ($1, $2, $3, $4)",
@@ -78,21 +76,13 @@ async def dialog_handler(message: Message, bot: Bot):
         )
     except Exception as e:
         logger.error(f"Ошибка при вставке сообщения пользователя: {e}")
-    if user['status'] == 'demo' and user['daily_message_count'] >= 5:
-        await message.answer("Доступно только 5 сообщений в день. Оформите подписку для неограниченного доступа.", reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="Оплатить через Telegram", callback_data="pay_telegram"),
-                    InlineKeyboardButton(text="Оплатить криптой", callback_data="pay_crypto")
-                ]
-            ]
-        ))
-        return
-    
+        return # Если не удалось сохранить сообщение, не продолжаем
+
     # 1. Получаем из Redis историю (список) и из Postgres summary (строку)
     memory_data = await get_user_memory(user_id)
-    history = memory_data["history"] # <--- ВОТ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+    history = memory_data["history"] 
     summary = memory_data["summary"]
+
     # 2. Добавляем текущее сообщение пользователя в историю
     history.append({"role": "user", "content": message.text})
 
@@ -101,7 +91,7 @@ async def dialog_handler(message: Message, bot: Bot):
     system_prompt = prompt_row['text'] if prompt_row else "Ты дружелюбный AI-собеседник."
     
     # 4. Отправляем запрос к GPT с историей и summary
-    text_len = len(message.text) if message.text else 0
+    text_len = len(message.text)
     delay = 3 if text_len > 100 else 1.5
     async with ChatActionSender(bot=bot, chat_id=message.chat.id):
         await asyncio.sleep(delay)

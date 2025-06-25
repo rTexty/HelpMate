@@ -13,7 +13,7 @@ from .db.postgres import db
 from .db.redis_client import redis_client
 from .logging_config import logger
 from .handlers import user, payments
-from .services.mailing_service import send_mailing
+from .services.mailing_service import poll_pending_mailings
 from .middlewares import setup_middlewares
 from aiogptbot.bot.services.payment_service import poll_cryptocloud_payments
 from aiogptbot.bot.services.subscription_service import reset_daily_limits
@@ -39,6 +39,13 @@ async def on_startup(bot: Bot):
     await db.connect()
     logger.info("Подключение к PostgreSQL установлено")
     
+    # Инициализация структуры БД
+    logger.info("Применение миграций БД...")
+    with open("aiogptbot/bot/db/init.sql", "r") as f:
+        sql_commands = f.read()
+    await db.execute(sql_commands)
+    logger.info("Структура БД успешно инициализирована.")
+
     logger.info("Подключение к Redis...")
     try:
         await redis_client.ping()
@@ -56,7 +63,7 @@ async def on_startup(bot: Bot):
     logger.info("Планировщик для сброса лимитов запущен.")
 
     logger.info("Запуск фоновых задач...")
-    asyncio.create_task(process_pending_mailings(bot))
+    asyncio.create_task(poll_pending_mailings(bot))
     asyncio.create_task(poll_cryptocloud_payments(bot))
     logger.info("Фоновые задачи запущены")
     logger.info("Бот запущен")
@@ -72,34 +79,6 @@ def register_middlewares(dp: Dispatcher):
 def register_handlers(dp: Dispatcher):
     dp.include_router(payments.router)
     dp.include_router(user.router)
-
-async def process_pending_mailings(bot: Bot):
-    while True:
-        # Получаем неотправленные рассылки
-        mailings = await db.fetch("SELECT * FROM mailings WHERE sent=FALSE ORDER BY created_at ASC")
-        for mailing in mailings:
-            # Определяем пользователей, которые писали основному боту
-            rows = await db.fetch("SELECT DISTINCT telegram_id FROM users WHERE id IN (SELECT user_id FROM messages)")
-            user_ids = [r['telegram_id'] for r in rows]
-            # Исключаем админов
-            ADMIN_IDS = [int(x) for x in settings.ADMIN_IDS.split(',') if x]
-            user_ids = [uid for uid in user_ids if uid not in ADMIN_IDS]
-            # Формируем кнопку
-            markup = None
-            if mailing['button_text'] and mailing['button_url']:
-                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=mailing['button_text'], url=mailing['button_url'])]])
-            sent, failed = 0, 0
-            for uid in user_ids:
-                try:
-                    await bot.send_message(uid, mailing['text'], reply_markup=markup)
-                    sent += 1
-                except Exception as e:
-                    logger.warning(f"Не удалось отправить сообщение {uid}: {e}")
-                    failed += 1
-            await db.execute("UPDATE mailings SET sent=TRUE WHERE id=$1", mailing['id'])
-            logger.info(f"Рассылка {mailing['id']} завершена: отправлено {sent}, ошибок {failed}")
-        await asyncio.sleep(20)
 
 async def main():
     bot = Bot(

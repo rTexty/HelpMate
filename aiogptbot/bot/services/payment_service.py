@@ -9,9 +9,9 @@ import asyncio
 
 
 async def create_telegram_invoice(user_id):
-    row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month'")
+    row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month_stars'")
     if not row:
-        return None, "Стоимость подписки не установлена. Обратитесь к администратору."
+        return None, "Стоимость подписки (Stars) не установлена. Обратитесь к администратору."
     price_in_stars = int(row['value'])
     prices = [LabeledPrice(label="Premium подписка на 1 месяц", amount=price_in_stars)]
     return {
@@ -25,7 +25,7 @@ async def create_telegram_invoice(user_id):
         "payload": f"premium_recharge_user_{user_id}"
     }, None
 
-async def record_successful_payment(user_id: int, amount: int, telegram_payment_charge_id: str):
+async def record_successful_telegram_payment(user_id: int, amount: int, telegram_payment_charge_id: str):
     """
     Записывает информацию об успешном платеже через Telegram Stars в базу данных.
     """
@@ -42,9 +42,9 @@ async def record_successful_payment(user_id: int, amount: int, telegram_payment_
     logger.info(f"Recorded successful payment for user_id={user_id}, amount={amount}, charge_id={telegram_payment_charge_id}")
 
 async def create_cryptocloud_invoice(user_id):
-    row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month'")
+    row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month_crypto'")
     if not row:
-        return None, "Стоимость подписки не установлена. Обратитесь к администратору."
+        return None, "Стоимость подписки (Crypto) не установлена. Обратитесь к администратору."
     price = int(row['value'])
     api_key = settings.CRYPTOCLOUD_API_KEY
     payload = {

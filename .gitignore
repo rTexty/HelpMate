@@ -134,4 +134,3 @@ nohup.out
 Thumbs.db
 
 # Migration files (optional, если не хотите коммитить дампы)
-*.sql 

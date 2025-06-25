@@ -34,6 +34,12 @@ class SubscriptionMiddleware(BaseMiddleware):
         
         logger.debug(f"[SubCheck] User {user_id}: Initial status is '{user['status']}', message count is {user['daily_message_count']}.")
 
+        # Если пользователь - админ, пропускаем все проверки
+        admin_ids = [int(x) for x in settings.ADMIN_IDS.split(',') if x]
+        if user_id in admin_ids:
+            logger.debug(f"User {user_id} is an admin. Skipping all checks.")
+            return await handler(event, data)
+
         # Проверка бана
         if user['is_banned']:
             logger.warning(f"[SubCheck] User {user_id} is banned. Blocking.")

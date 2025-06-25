@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, CallbackQuery
 from aiogram.utils.markdown import hbold
 from datetime import datetime, timedelta
 from .filters import AdminFilter
@@ -246,18 +246,43 @@ async def restart_bot(message: Message):
     import os
     os.system("./restart_userbot.sh")
 
-@router.message(AdminFilter(), Command("get_price"))
-async def get_price(message: Message):
-    row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month'")
-    if row:
-        await message.answer(f"Текущая стоимость подписки: {row['value']} руб.")
-    else:
-        await message.answer("Стоимость подписки не установлена.")
+@router.message(AdminFilter(), Command("get_prices"))
+async def get_prices(message: Message):
+    stars_row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month_stars'")
+    crypto_row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month_crypto'")
+    
+    stars_price = f"{stars_row['value']} XTR" if stars_row else "не установлена"
+    crypto_price = f"{crypto_row['value']} RUB" if crypto_row else "не установлена"
+
+    await message.answer(
+        f"{hbold('Текущие цены на подписку')}\n\n"
+        f"Через Telegram Stars: {stars_price}\n"
+        f"Через CryptoCloud: {crypto_price}"
+    )
 
 @router.message(AdminFilter(), Command("set_price"))
-async def set_price(message: Message, state: FSMContext):
-    await message.answer("Введите новую стоимость подписки в рублях (целое число):")
+async def set_price_start(message: Message, state: FSMContext):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Telegram Stars (XTR)", callback_data="set_price_stars")],
+        [InlineKeyboardButton(text="CryptoCloud (RUB)", callback_data="set_price_crypto")]
+    ])
+    await message.answer("Какую цену вы хотите установить?", reply_markup=keyboard)
+
+@router.callback_query(AdminFilter(), F.data.startswith("set_price_"))
+async def set_price_method_callback(call: CallbackQuery, state: FSMContext):
+    price_type = call.data.replace("set_price_", "")
+    
+    if price_type == 'stars':
+        prompt_text = "Введите новую стоимость подписки в Telegram Stars (целое число):"
+        db_key = 'premium_month_stars'
+    else:
+        prompt_text = "Введите новую стоимость подписки в рублях (целое число):"
+        db_key = 'premium_month_crypto'
+
+    await state.update_data(price_db_key=db_key)
+    await call.message.answer(prompt_text)
     await state.set_state(PriceStates.waiting_for_price)
+    await call.answer()
 
 @router.message(AdminFilter(), PriceStates.waiting_for_price)
 async def save_price(message: Message, state: FSMContext):
@@ -268,9 +293,20 @@ async def save_price(message: Message, state: FSMContext):
     except Exception:
         await message.answer("Введите корректное положительное число!")
         return
+
+    data = await state.get_data()
+    price_db_key = data.get("price_db_key")
+
+    if not price_db_key:
+        await message.answer("Произошла ошибка. Попробуйте снова, начав с команды /set_price.")
+        await state.clear()
+        return
+
     await db.execute(
-        "INSERT INTO prices (name, value, updated_at) VALUES ('premium_month', $1, NOW()) ON CONFLICT (name) DO UPDATE SET value=$1, updated_at=NOW()",
-        price
+        "INSERT INTO prices (name, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (name) DO UPDATE SET value=$2, updated_at=NOW()",
+        price_db_key, price
     )
-    await message.answer(f"Стоимость подписки обновлена: {price} руб.")
+    
+    currency = "XTR" if "stars" in price_db_key else "руб."
+    await message.answer(f"Стоимость подписки обновлена: {price} {currency}")
     await state.clear()
