@@ -12,18 +12,34 @@ async def create_telegram_invoice(user_id):
     row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month'")
     if not row:
         return None, "Стоимость подписки не установлена. Обратитесь к администратору."
-    price = int(row['value'])
-    prices = [LabeledPrice(label="Premium подписка на 1 месяц", amount=price * 100)]
+    price_in_stars = int(row['value'])
+    prices = [LabeledPrice(label="Premium подписка на 1 месяц", amount=price_in_stars)]
     return {
         "user_id": user_id,
         "title": "Premium подписка",
         "description": "Неограниченный доступ к AI-боту на 1 месяц.",
-        "provider_token": settings.TELEGRAM_PAYMENTS_TOKEN,
-        "currency": "RUB",
+        "provider_token": "",
+        "currency": "XTR",
         "prices": prices,
         "start_parameter": "premium-subscription",
-        "payload": str(user_id)
+        "payload": f"premium_recharge_user_{user_id}"
     }, None
+
+async def record_successful_payment(user_id: int, amount: int, telegram_payment_charge_id: str):
+    """
+    Записывает информацию об успешном платеже через Telegram Stars в базу данных.
+    """
+    await db.execute(
+        """
+        INSERT INTO payments (user_id, amount, currency, payment_method, status, created_at, invoice_id)
+        VALUES ($1, $2, 'XTR', 'stars', 'success', $3, $4)
+        """,
+        user_id,
+        amount,
+        datetime.now(),
+        telegram_payment_charge_id,
+    )
+    logger.info(f"Recorded successful payment for user_id={user_id}, amount={amount}, charge_id={telegram_payment_charge_id}")
 
 async def create_cryptocloud_invoice(user_id):
     row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month'")
@@ -60,12 +76,11 @@ async def create_cryptocloud_invoice(user_id):
         else:
             return None, "Ошибка при создании ссылки на оплату. Попробуйте позже."
 
-async def poll_cryptocloud_payments():
+async def poll_cryptocloud_payments(bot: Bot):
     """
     Запускать как отдельную задачу при старте бота.
     Проверяет все pending-платежи CryptoCloud раз в 20 секунд и активирует подписку при оплате.
     """
-    bot = Bot(token=settings.BOT_TOKEN)
     while True:
         payments = await db.fetch("SELECT * FROM payments WHERE payment_method='cryptocloud' AND status='pending'")
         api_key = settings.CRYPTOCLOUD_API_KEY

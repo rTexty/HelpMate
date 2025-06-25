@@ -1,79 +1,117 @@
 from aiogram import Router, F
-from aiogram.types import Message, PreCheckoutQuery, SuccessfulPayment, LabeledPrice, ShippingOption, ShippingQuery
+from aiogram.types import Message, PreCheckoutQuery
 from aiogram.filters import Command
 from ..db.postgres import db
 from ..config import settings
 from loguru import logger
 from datetime import datetime, timedelta
-import httpx
-import asyncio
-from aiogram import Bot
-from aiogptbot.bot.services.payment_service import create_cryptocloud_invoice
+from aiogptbot.bot.services.payment_service import create_telegram_invoice, create_cryptocloud_invoice, record_successful_payment
 
 router = Router()
 
-# --- Telegram Payments ---
+# --- Telegram Stars ---
 
 @router.message(Command("buy_premium"))
-async def buy_premium(message: Message):
-    row = await db.fetchrow("SELECT value FROM prices WHERE name='premium_month'")
-    if not row:
-        await message.answer("Стоимость подписки не установлена. Обратитесь к администратору.")
+async def buy_premium(message: Message, bot):
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.answer("Ошибка: не удалось определить пользователя.")
         return
-    price = int(row['value'])
-    prices = [LabeledPrice(label="Premium подписка на 1 месяц", amount=price * 100)]
-    await message.answer_invoice(
-        title="Premium подписка",
-        description="Неограниченный доступ к AI-боту на 1 месяц.",
-        provider_token=settings.TELEGRAM_PAYMENTS_TOKEN,
-        currency="RUB",
-        prices=prices,
-        start_parameter="premium-subscription",
-        payload=str(message.from_user.id)
+    invoice_data, error = await create_telegram_invoice(user_id)
+    if error or not invoice_data:
+        await message.answer(error or "Ошибка при создании инвойса. Попробуйте позже.")
+        return
+    await bot.send_invoice(
+        invoice_data["user_id"],
+        invoice_data["title"],
+        invoice_data["description"],
+        invoice_data["payload"],
+        "",  # provider_token пустой для Stars
+        "XTR",  # Валюта Stars
+        invoice_data["prices"],
+        start_parameter=invoice_data["start_parameter"]
     )
 
 @router.pre_checkout_query()
 async def pre_checkout_query_handler(pre_checkout_query: PreCheckoutQuery):
+    if not pre_checkout_query.from_user:
+        logger.error("[PreCheckout] Received query without user info.")
+        await pre_checkout_query.answer(ok=False, error_message="Не удалось определить пользователя.")
+        return
+    user_id = pre_checkout_query.from_user.id
+    logger.info(f"[PreCheckout] Received for user {user_id} with payload {pre_checkout_query.invoice_payload}")
+
+    user = await db.fetchrow("SELECT status, subscription_until FROM users WHERE telegram_id=$1", user_id)
+    now = datetime.now()
+
+    if user and user['status'] == 'premium' and user['subscription_until'] and user['subscription_until'] > now:
+        error_message = "У вас уже активна подписка! Дождитесь окончания текущей или напишите в поддержку."
+        logger.warning(f"[PreCheckout] User {user_id} already has an active subscription. Rejecting.")
+        await pre_checkout_query.answer(ok=False, error_message=error_message)
+        return
+
+    logger.info(f"[PreCheckout] Approving for user {user_id}.")
     await pre_checkout_query.answer(ok=True)
 
 @router.message(F.successful_payment)
-async def successful_payment(message: Message):
-    user_id = message.from_user.id
-    user_row = await db.fetchrow("SELECT id FROM users WHERE telegram_id=$1", user_id)
-    if not user_row:
-        await message.answer("Пользователь не найден в базе. Попробуйте позже.")
+async def successful_payment_handler(message: Message):
+    if not message.from_user or not message.successful_payment:
+        logger.error("[SuccessfulPayment] Received message without user or payment info.")
         return
-    real_user_id = user_row["id"]
-    amount = message.successful_payment.total_amount / 100
-    currency = message.successful_payment.currency
-    await db.execute(
-        "INSERT INTO payments (user_id, amount, currency, payment_method, status, created_at) VALUES ($1, $2, $3, 'telegram', 'success', $4)",
-        real_user_id, amount, currency, datetime.now()
-    )
-    # Обновляем подписку
-    until = datetime.now() + timedelta(days=30)
-    await db.execute(
-        "UPDATE users SET status='premium', subscription_until=$1 WHERE telegram_id=$2",
+
+    user_id = message.from_user.id
+    payment_info = message.successful_payment
+    logger.info(f"[SuccessfulPayment] Received for user {user_id}. Amount: {payment_info.total_amount} {payment_info.currency}. Charge ID: {payment_info.telegram_payment_charge_id}")
+
+    user = await db.fetchrow("SELECT id, status, subscription_until FROM users WHERE telegram_id=$1", user_id)
+    if not user:
+        logger.error(f"[SuccessfulPayment] User {user_id} not found in DB!")
+        return
+
+    now = datetime.now()
+    if user['status'] == 'premium' and user['subscription_until'] and user['subscription_until'] > now:
+        logger.warning(f"[SuccessfulPayment] User {user_id} already has an active subscription. No changes made.")
+        await message.answer("Спасибо за оплату! У вас уже была активная подписка.")
+        return
+
+    real_user_id = user["id"]
+    until = now + timedelta(days=30)
+    
+    logger.info(f"[SuccessfulPayment] Updating user {user_id} (DB ID: {real_user_id}) to premium until {until}.")
+    
+    update_result = await db.execute(
+        "UPDATE users SET status='premium', subscription_until=$1, daily_message_count=0 WHERE telegram_id=$2",
         until, user_id
     )
+
+    logger.info(f"[SuccessfulPayment] User {user_id} update status: {update_result}. Now recording payment.")
+
+    await record_successful_payment(
+        user_id=real_user_id,
+        amount=payment_info.total_amount,
+        telegram_payment_charge_id=payment_info.telegram_payment_charge_id
+    )
+    
     await db.execute(
         "INSERT INTO subscriptions (user_id, type, start_date, end_date, is_active) VALUES ($1, 'premium', $2, $3, TRUE)",
-        real_user_id, datetime.now(), until
+        real_user_id, now, until
     )
-    await message.answer("Спасибо за оплату! Ваша подписка активирована на 1 месяц.")
-    logger.info(f"User {user_id} оплатил подписку через Telegram Payments.")
 
-# --- Stripe/ЮKassa (заготовка) ---
-@router.message(Command("buy_premium_stripe"))
-async def buy_premium_stripe(message: Message):
-    await message.answer("Для оплаты через Stripe/ЮKassa обратитесь к администратору или используйте Telegram Payments.")
+    await message.answer("Спасибо за оплату! Ваша подписка активирована на 1 месяц.")
+    logger.info(f"[SuccessfulPayment] Successfully activated subscription for user {user_id} until {until}.")
 
 # --- CryptoCloud ---
 @router.message(Command("buy_premium_crypto"))
 async def buy_premium_crypto(message: Message):
-    user_id = message.from_user.id
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.answer("Ошибка: не удалось определить пользователя.")
+        return
     result, error = await create_cryptocloud_invoice(user_id)
     if error:
         await message.answer(error)
         return
-    await message.answer(f"Оплатите по ссылке (криптовалюта):\n{result['url']}\n\nПосле оплаты подписка будет активирована в течение нескольких минут.")
+    if result and "url" in result:
+        await message.answer(f"Оплатите по ссылке (криптовалюта):\n{result['url']}\n\nПосле оплаты подписка будет активирована в течение нескольких минут.")
+    else:
+        await message.answer("Ошибка при создании ссылки на оплату. Попробуйте позже.")

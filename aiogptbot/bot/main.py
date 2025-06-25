@@ -4,7 +4,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from loguru import logger
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .config import settings
 from .db.postgres import db
@@ -14,6 +16,7 @@ from .handlers import user, payments
 from .services.mailing_service import send_mailing
 from .middlewares import setup_middlewares
 from aiogptbot.bot.services.payment_service import poll_cryptocloud_payments
+from aiogptbot.bot.services.subscription_service import reset_daily_limits
 
 # Проверка переменных окружения
 REQUIRED_ENV = [settings.BOT_TOKEN, settings.OPENAI_API_KEY, settings.POSTGRES_DSN, settings.REDIS_DSN]
@@ -32,20 +35,35 @@ async def set_commands(bot: Bot):
     await bot.set_my_commands(commands)
 
 async def on_startup(bot: Bot):
-    logger.info("Бот запущен")
-    await set_commands(bot)
+    logger.info("Подключение к PostgreSQL...")
     await db.connect()
     logger.info("Подключение к PostgreSQL установлено")
+    
+    logger.info("Подключение к Redis...")
     try:
         await redis_client.ping()
         logger.info("Подключение к Redis установлено")
     except Exception as e:
         logger.error(f"Ошибка подключения к Redis: {e}")
         sys.exit(1)
+        
+    await set_commands(bot)
+    logger.info("Команды бота установлены")
+
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(reset_daily_limits, 'cron', hour=0, minute=0)
+    scheduler.start()
+    logger.info("Планировщик для сброса лимитов запущен.")
+
+    logger.info("Запуск фоновых задач...")
+    asyncio.create_task(process_pending_mailings(bot))
+    asyncio.create_task(poll_cryptocloud_payments(bot))
+    logger.info("Фоновые задачи запущены")
+    logger.info("Бот запущен")
 
 async def on_shutdown(bot: Bot):
     await db.close()
-    await redis_client.close()
+    await redis_client.aclose()
     logger.info("Бот остановлен и соединения закрыты")
 
 def register_middlewares(dp: Dispatcher):
@@ -55,7 +73,7 @@ def register_handlers(dp: Dispatcher):
     dp.include_router(payments.router)
     dp.include_router(user.router)
 
-async def process_pending_mailings(bot):
+async def process_pending_mailings(bot: Bot):
     while True:
         # Получаем неотправленные рассылки
         mailings = await db.fetch("SELECT * FROM mailings WHERE sent=FALSE ORDER BY created_at ASC")
@@ -84,22 +102,25 @@ async def process_pending_mailings(bot):
         await asyncio.sleep(20)
 
 async def main():
-    bot = Bot(token=settings.BOT_TOKEN, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     storage = RedisStorage(redis_client)
     dp = Dispatcher(storage=storage)
 
     register_middlewares(dp)
     register_handlers(dp)
 
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+
     try:
-        await on_startup(bot)  # Сначала подключаем БД и Redis
-        asyncio.create_task(process_pending_mailings(bot))
-        asyncio.create_task(poll_cryptocloud_payments())
         await dp.start_polling(bot)
     except (KeyboardInterrupt, SystemExit):
         logger.info("Остановка бота...")
     finally:
-        await on_shutdown(bot)
+        await bot.session.close()
 
 if __name__ == "__main__":
     try:

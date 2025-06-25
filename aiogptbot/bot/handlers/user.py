@@ -88,18 +88,27 @@ async def dialog_handler(message: Message, bot: Bot):
             ]
         ))
         return
-    memory = await get_user_memory(user_id)
-    prompt = await db.fetchrow("SELECT text FROM prompts WHERE is_active=TRUE ORDER BY id DESC LIMIT 1")
-    system_prompt = prompt['text'] if prompt else "Ты дружелюбный AI-собеседник."
-    history = memory['history'] if memory else []
-    summary = memory['summary'] if memory else None
+    
+    # 1. Получаем из Redis историю (список) и из Postgres summary (строку)
+    memory_data = await get_user_memory(user_id)
+    history = memory_data["history"] # <--- ВОТ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+    summary = memory_data["summary"]
+    # 2. Добавляем текущее сообщение пользователя в историю
     history.append({"role": "user", "content": message.text})
+
+    # 3. Получаем системный промпт
+    prompt_row = await db.fetchrow("SELECT text FROM prompts WHERE is_active=TRUE ORDER BY id DESC LIMIT 1")
+    system_prompt = prompt_row['text'] if prompt_row else "Ты дружелюбный AI-собеседник."
+    
+    # 4. Отправляем запрос к GPT с историей и summary
     text_len = len(message.text) if message.text else 0
     delay = 3 if text_len > 100 else 1.5
     async with ChatActionSender(bot=bot, chat_id=message.chat.id):
         await asyncio.sleep(delay)
         gpt_response = await ask_gpt(system_prompt, history, summary)
         await message.answer(gpt_response)
+
+    # 5. Сохраняем сообщение ассистента в БД
     try:
         await db.execute(
             "INSERT INTO messages (user_id, role, content, created_at) VALUES ($1, $2, $3, $4)",
@@ -107,9 +116,11 @@ async def dialog_handler(message: Message, bot: Bot):
         )
     except Exception as e:
         logger.error(f"Ошибка при вставке сообщения ассистента: {e}")
+
+    # 6. Обновляем память (историю в Redis, summary в Postgres) и last_activity
     await update_user_memory(user_id, history, gpt_response)
     await db.execute(
-        "UPDATE users SET daily_message_count = daily_message_count + 1, last_activity = $1 WHERE telegram_id = $2",
+        "UPDATE users SET last_activity = $1 WHERE telegram_id = $2",
         datetime.now(), user_id
     )
     logger.info(f"User {user_id} получил ответ от GPT")

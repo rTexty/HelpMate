@@ -112,7 +112,8 @@ env/
 
 # dotenv environment variables
 .env
-.env.*
+.env
+.qodo
 
 # Log files
 *.log

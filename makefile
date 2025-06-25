@@ -3,9 +3,18 @@ run:
 	python -m aiogptbot.adminbot.main &
 	wait
 
-restart_userbot:
-	./restart_userbot.sh
+r:
+	make break
+	make run
 
 break:
 	pkill -f 'aiogptbot.bot.main'
 	pkill -f 'aiogptbot.adminbot.main'
+
+start:
+	brew services start redis
+	brew services start postgresql
+
+stop: 
+	brew services stop redis
+	brew services stop postgresql
