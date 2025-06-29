@@ -63,10 +63,9 @@ class Payment(Base):
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     amount = Column(Numeric(10, 2), nullable=False)
     currency = Column(String(10), nullable=False)
-    payment_system = Column(String(50), nullable=False)
+    payment_method = Column(String(50), nullable=False)
     status = Column(String(50), default='pending')
-    telegram_payment_charge_id = Column(Text)
-    cryptocloud_invoice_id = Column(String(255))
+    invoice_id = Column(Text, unique=True, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

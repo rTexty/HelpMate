@@ -45,18 +45,13 @@ class SubscriptionMiddleware(BaseMiddleware):
 
         user = await db.fetchrow("SELECT * FROM users WHERE telegram_id=$1", user_id)
         if not user:
-            logger.info(f"New user {user_id}, creating DB entry.")
-            await db.execute(
-                """INSERT INTO users (telegram_id, username, full_name, status, daily_message_count, onboarding_completed, is_banned) 
-                   VALUES ($1, $2, $3, 'demo', 0, FALSE, FALSE)""",
-                user_id,
-                event.from_user.username,
-                event.from_user.full_name,
+            logger.warning(
+                f"[SubCheck] User {user_id} not found in DB. Should start with /start. Ignoring message."
             )
-            user = await db.fetchrow(
-                "SELECT * FROM users WHERE telegram_id=$1", user_id
-            )
-        elif user.get('status') is None:
+            await event.answer("Пожалуйста, начните с команды /start")
+            return
+
+        if user.get('status') is None:
             logger.warning(f"[SubCheck] User {user_id} has NULL status. Patching record.")
             await db.execute(
                 "UPDATE users SET status='demo', daily_message_count=0 WHERE telegram_id=$1", user_id
