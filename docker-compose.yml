@@ -3,7 +3,7 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15-alpine # Используем легковесный образ Alpine
-    container_name: gptbot_postgres
+    container_name: aiogptbot_postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -19,7 +19,7 @@ services:
 
   redis:
     image: redis:7-alpine # Используем легковесный образ Alpine
-    container_name: gptbot_redis
+    container_name: aiogptbot_redis
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -29,8 +29,12 @@ services:
 
   bot:
     build: .
-    container_name: gptbot_app
-    command: ["python", "-u", "-m", "aiogptbot.bot.main"]
+    container_name: aiogptbot
+    command: >
+      sh -c "echo 'Waiting for DB...' &&
+             alembic upgrade head &&
+             echo 'Migrations applied, starting bot...' &&
+             python -u -m aiogptbot.bot.main"
     env_file: .env
     restart: unless-stopped
     depends_on:
@@ -41,7 +45,7 @@ services:
 
   admin_bot:
     build: .
-    container_name: gptbot_admin
+    container_name: aiogptbot_admin
     command: ["python", "-u", "-m", "aiogptbot.adminbot.main"]
     env_file: .env
     restart: unless-stopped

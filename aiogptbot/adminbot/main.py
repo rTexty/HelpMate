@@ -33,6 +33,8 @@ async def set_commands(bot: Bot):
         BotCommand(command="stats", description="Статистика"),
         BotCommand(command="set_price", description="Установить стоимость подписки"),
         BotCommand(command="get_prices", description="Получить стоимости подписки"),
+        BotCommand(command="set_welcome_message", description="Изменить приветствие"),
+        BotCommand(command="get_welcome_message", description="Показать приветствие"),
     ]
     await bot.set_my_commands(commands)
 

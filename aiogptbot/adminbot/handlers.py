@@ -1,7 +1,8 @@
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.utils.markdown import hbold
+from aiogram.enums import ParseMode
 from datetime import datetime, timedelta
 from .filters import AdminFilter
 from ..bot.db.postgres import db
@@ -27,28 +28,70 @@ class PromptStates(StatesGroup):
 class PriceStates(StatesGroup):
     waiting_for_price = State()
 
+class WelcomeMessageStates(StatesGroup):
+    waiting_for_welcome_message = State()
+
 router = Router()
 
 # --- Промпты ---
 @router.message(AdminFilter(), Command("get_prompt"))
 async def get_prompt(message: Message):
     prompt = await db.fetchrow("SELECT text FROM prompts WHERE is_active=TRUE ORDER BY id DESC LIMIT 1")
-    if prompt:
-        await message.answer(f"Текущий промпт:\n\n{prompt['text']}")
+    if prompt and prompt['text']:
+        full_text = f"Текущий промпт:\n\n{prompt['text']}"
+        if len(full_text) > 4096:
+            await message.answer("Текущий промпт (слишком длинный, будет отправлен по частям):")
+            # Отправляем основной текст по частям
+            for i in range(0, len(prompt['text']), 4000):
+                await message.answer(prompt['text'][i:i + 4000])
+        else:
+            await message.answer(full_text)
     else:
         await message.answer("Промпт не найден.")
 
 @router.message(AdminFilter(), Command("set_prompt"))
 async def set_prompt(message: Message, state: FSMContext):
-    await message.answer("Введите новый системный промпт:")
+    await state.update_data(prompt_parts=[])
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Сохранить промпт")]],
+        resize_keyboard=True
+    )
+    await message.answer(
+        "Отправьте текст нового системного промпта. Можно разбить на несколько сообщений. Когда закончите, нажмите кнопку «Сохранить промпт».",
+        reply_markup=keyboard
+    )
     await state.set_state(PromptStates.waiting_for_prompt)
 
-@router.message(AdminFilter(), PromptStates.waiting_for_prompt)
-async def save_prompt(message: Message, state: FSMContext):
-    text = message.text
+# Этот обработчик будет накапливать части промпта
+@router.message(AdminFilter(), PromptStates.waiting_for_prompt, F.text, ~F.text.startswith('/'), F.text != "Сохранить промпт")
+async def accumulate_prompt_parts(message: Message, state: FSMContext):
+    data = await state.get_data()
+    parts = data.get("prompt_parts", [])
+    if message.text:
+        parts.append(message.text)
+        await state.update_data(prompt_parts=parts)
+        # Опционально: можно добавить реакцию, чтобы подтвердить получение части
+        # await message.react([types.ReactionTypeEmoji(emoji="👍")])
+    else:
+        await message.answer("Пожалуйста, отправьте текстовое сообщение.")
+
+# Этот обработчик сохранит полный промпт
+@router.message(AdminFilter(), PromptStates.waiting_for_prompt, F.text == "Сохранить промпт")
+async def save_full_prompt(message: Message, state: FSMContext):
+    data = await state.get_data()
+    parts = data.get("prompt_parts", [])
+    if not parts:
+        await message.answer(
+            "Промпт пустой. Отправка отменена. Чтобы ввести промпт заново, используйте /set_prompt.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.clear()
+        return
+
+    text = "\n\n".join(parts)
     await db.execute("UPDATE prompts SET is_active=FALSE")
     await db.execute("INSERT INTO prompts (text, is_active) VALUES ($1, TRUE)", text)
-    await message.answer("Промпт обновлён и активирован.")
+    await message.answer("Промпт обновлён и активирован.", reply_markup=ReplyKeyboardRemove())
     await state.clear()
 
 @router.message(AdminFilter(), Command("history_prompt"))
@@ -57,8 +100,17 @@ async def history_prompt(message: Message):
     if not rows:
         await message.answer("История промптов пуста.")
         return
-    text = "\n\n".join([f"#{r['id']} ({r['created_at'].strftime('%d.%m.%Y %H:%M')}):\n{r['text']}" for r in rows])
-    await message.answer(f"Последние 5 версий промпта:\n\n{text}")
+
+    full_text = "Последние 5 версий промпта:\n\n" + "\n\n---\n\n".join(
+        [f"#{r['id']} ({r['created_at'].strftime('%d.%m.%Y %H:%M')}):\n{r['text']}" for r in rows]
+    )
+
+    if len(full_text) > 4096:
+        await message.answer("История промптов слишком длинная, будет отправлена по частям.")
+        for i in range(0, len(full_text), 4000):
+            await message.answer(full_text[i:i + 4000])
+    else:
+        await message.answer(full_text)
 
 @router.message(AdminFilter(), F.text.regexp(r"^/restore_prompt_(\\d+)$"))
 async def restore_prompt(message: Message):
@@ -309,4 +361,36 @@ async def save_price(message: Message, state: FSMContext):
     
     currency = "XTR" if "stars" in price_db_key else "руб."
     await message.answer(f"Стоимость подписки обновлена: {price} {currency}")
+    await state.clear()
+
+# --- Приветствие ---
+@router.message(AdminFilter(), Command("get_welcome_message"))
+async def get_welcome_message(message: Message):
+    setting = await db.fetchrow("SELECT value FROM text_settings WHERE key='welcome_message'")
+    if setting and setting['value']:
+        await message.answer(f"Текущее приветствие (как его увидит пользователь):")
+        try:
+            await message.answer(setting['value'], parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await message.answer(f"Не удалось отобразить форматирование. Исходный текст:\n\n{setting['value']}\n\nОшибка: {e}")
+    else:
+        await message.answer("Приветствие не найдено.")
+
+@router.message(AdminFilter(), Command("set_welcome_message"))
+async def set_welcome_message(message: Message, state: FSMContext):
+    await message.answer("Введите новый текст приветствия (можно использовать HTML-теги для форматирования):\n\nОбязательно укажите {name} в качестве обращения к пользователю, вместо {name} будет имя пользователя\n\nПример:\n<b>С возвращением, {name}!</b>\n\nКак твои дела? Что-то случилось? Опишите вашу проблему, и мы вместе найдем решение.\n\n ")
+    await state.set_state(WelcomeMessageStates.waiting_for_welcome_message)
+
+@router.message(AdminFilter(), WelcomeMessageStates.waiting_for_welcome_message)
+async def save_welcome_message(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("Сообщение не может быть пустым. Попробуйте еще раз.")
+        return
+        
+    text = message.text
+    await db.execute(
+        "INSERT INTO text_settings (key, value, updated_at) VALUES ('welcome_message', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=NOW()",
+        text
+    )
+    await message.answer("Приветственное сообщение обновлено.")
     await state.clear()

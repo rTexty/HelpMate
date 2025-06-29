@@ -7,3 +7,7 @@ loguru==0.7.2
 pydantic==2.5.2
 apscheduler==3.10.4 
 psycopg2-binary==2.9.9
+httpx
+alembic
+SQLAlchemy
+

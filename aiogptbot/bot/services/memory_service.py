@@ -66,11 +66,11 @@ async def update_user_memory(user_id: int, history: list, assistant_response: st
         if user_db_id_row:
             user_db_id = user_db_id_row['id']
             await db.execute(
-                """
-                INSERT INTO user_memory (user_id, summary, updated_at) 
-                VALUES ($1, $2, NOW()) 
-                ON CONFLICT (user_id) DO UPDATE SET summary = EXCLUDED.summary, updated_at = NOW()
-                """,
-                user_db_id, new_summary
+                    """
+                    INSERT INTO user_memory (user_id, summary, updated_at) 
+                    VALUES ($1, $2, NOW()) 
+                    ON CONFLICT (user_id) DO UPDATE SET summary = EXCLUDED.summary, updated_at = NOW()
+                    """,
+                    user_db_id, new_summary
             )
             logger.info(f"Successfully updated summary for user {user_id}.")

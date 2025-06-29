@@ -23,18 +23,6 @@ class SadEmotionFilter(BaseFilter):
         text = message.text.lower() if message.text else ''
         return any(word in text for word in SAD_KEYWORDS)
 
-# Фильтр: мат и грубости
-BAD_WORDS = [
-    'блять', 'сука', 'хуй', 'пизд', 'еба', 'ебл', 'гандон', 'мудак', 'долбоёб', 'долбаёб', 'идиот', 'тварь',
-    'сволочь', 'чмо', 'мразь', 'ублюдок', 'гнида', 'шлюха', 'проститутка', 'сучка', 'гавно', 'говно', 'дерьмо'
-]
-BAD_WORDS_RE = re.compile(r'(' + '|'.join(BAD_WORDS) + r')', re.IGNORECASE)
-
-class BadWordFilter(BaseFilter):
-    async def __call__(self, message: Message) -> bool:
-        text = message.text.lower() if message.text else ''
-        return bool(BAD_WORDS_RE.search(text))
-
 # Фильтр: только для подписчиков (premium)
 class PremiumFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:

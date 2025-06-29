@@ -7,12 +7,14 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from loguru import logger
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from alembic.config import Config
+from alembic import command
 
 from .config import settings
 from .db.postgres import db
 from .db.redis_client import redis_client
 from .logging_config import logger
-from .handlers import user, payments
+from .handlers import user, payments, onboarding
 from .services.mailing_service import poll_pending_mailings
 from .middlewares import setup_middlewares
 from aiogptbot.bot.services.payment_service import poll_cryptocloud_payments
@@ -39,12 +41,16 @@ async def on_startup(bot: Bot):
     await db.connect()
     logger.info("Подключение к PostgreSQL установлено")
     
-    # Инициализация структуры БД
+    # Применение миграций Alembic
     logger.info("Применение миграций БД...")
-    with open("aiogptbot/bot/db/init.sql", "r") as f:
-        sql_commands = f.read()
-    await db.execute(sql_commands)
-    logger.info("Структура БД успешно инициализирована.")
+    try:
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Миграции БД успешно применены.")
+    except Exception as e:
+        logger.error(f"Ошибка при применении миграций: {e}")
+        # В зависимости от политики, можно либо остановить запуск, либо продолжить
+        # sys.exit(1)
 
     logger.info("Подключение к Redis...")
     try:
@@ -78,6 +84,7 @@ def register_middlewares(dp: Dispatcher):
 
 def register_handlers(dp: Dispatcher):
     dp.include_router(payments.router)
+    dp.include_router(onboarding.router)
     dp.include_router(user.router)
 
 async def main():

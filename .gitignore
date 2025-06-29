@@ -134,3 +134,4 @@ nohup.out
 Thumbs.db
 
 # Migration files (optional, если не хотите коммитить дампы)
+.env.example
