@@ -40,12 +40,21 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext):
     if not user:
         logger.info(f"User {user_id}: Not found in DB. This is a new user.")
         await db.execute(
-            "INSERT INTO users (telegram_id, username, full_name, created_at) VALUES ($1, $2, $3, $4)",
+            """INSERT INTO users (telegram_id, username, full_name, status, daily_message_count, onboarding_completed, is_banned, created_at, last_activity)
+               VALUES ($1, $2, $3, 'demo', 0, FALSE, FALSE, $4, $4)""",
             user_id, message.from_user.username, message.from_user.full_name, datetime.now()
         )
         logger.info(f"User {user_id}: DB entry created. Starting onboarding...")
         await start_onboarding(message, state, bot)
         return
+
+    # Patch for existing users with old schema
+    if user.get('status') is None:
+        logger.warning(f"User {user_id} in /start has NULL status. Patching record.")
+        await db.execute(
+            "UPDATE users SET status='demo', daily_message_count=0 WHERE telegram_id=$1", user_id
+        )
+        user = await db.fetchrow("SELECT * FROM users WHERE telegram_id=$1", user_id)
 
     # Case 2: Existing user who hasn't completed onboarding
     onboarding_completed_raw = user.get('onboarding_completed')

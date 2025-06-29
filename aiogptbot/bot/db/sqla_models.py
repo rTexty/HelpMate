@@ -68,4 +68,37 @@ class Payment(Base):
     telegram_payment_charge_id = Column(Text)
     cryptocloud_invoice_id = Column(String(255))
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()) 
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class UserMemory(Base):
+    __tablename__ = 'user_memory'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), unique=True)
+    summary = Column(Text)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+class Subscription(Base):
+    __tablename__ = 'subscriptions'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    type = Column(String(50), default='premium')
+    start_date = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    end_date = Column(TIMESTAMP(timezone=True))
+    is_active = Column(Boolean, default=True)
+
+class Price(Base):
+    __tablename__ = 'prices'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False) # e.g., 'premium_month_stars'
+    value = Column(Integer, nullable=False) # in cents or stars
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+class Mailing(Base):
+    __tablename__ = 'mailings'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    text = Column(Text, nullable=False)
+    button_text = Column(String(255))
+    button_url = Column(String(255))
+    segment = Column(String(50))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    sent = Column(Boolean, default=False, index=True) 
