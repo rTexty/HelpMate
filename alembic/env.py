@@ -7,6 +7,10 @@ from sqlalchemy import pool
 
 from alembic import context
 
+# Explicitly load .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 # Добавляем путь к нашему проекту, чтобы Alembic мог найти настройки и модели
 sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(__file__), '..')))
 
